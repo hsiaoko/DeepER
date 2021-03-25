@@ -12,46 +12,6 @@ from distributed_rep import embeding as eb
 import pandas as pd
 import numpy as np
 
-class ERModel(nn.Module):
-    def __init__(self):
-        super(ERModel, self).__init__()
-
-        self.rnn = nn.LSTM(     
-            input_size=100,      # 图片每行的数据像素点
-            hidden_size=64,     # rnn hidden unit
-            num_layers=1,       # 有几层 RNN layers
-            batch_first=True,   # input & output 会是以 batch size 为第一维度的特征集 e.g. (batch, time_step, input_size)
-        )
-        self.hidden = nn.Linear(64, 32)
-        self.out = nn.Linear(32, 2)    # 输出层
-
-    def forward(self, x_l, x_r):
-        r_out_l, (h_n_l, h_c_l) = self.rnn(x_l, None)  
-        r_out_r, (h_n_r, h_c_r) = self.rnn(x_r, None)   
-
-        out_l = (r_out_l[:, -1, :])
-        out_r = (r_out_r[:, -1, :])
-
-        dis = torch.sub(out_l, out_r)
-        sim_rep = dis.pow(2)
-        sim_rep = self.hidden(sim_rep)
-        out = self.out(sim_rep)
-        return out
-    @staticmethod
-    def euclidean_distance(l, r):
-        dis = torch.sub(l, r)
-        dis = dis.pow(2)
-        return dis
-        
-    @staticmethod
-    def cos_distance(l,r):
-        l = F.normalize(l, dim=-1)
-        r = F.normalize(r, dim=-1)
-        cose = torch.mm(l,r)
-        return 1 - cose
-    @staticmethod
-    def element_wise(l,r):            
-        pass
 
 class ERModel(nn.Module):
     def __init__(self):
@@ -59,25 +19,38 @@ class ERModel(nn.Module):
 
         self.rnn = nn.LSTM(     
             input_size=100,      # 图片每行的数据像素点
-            hidden_size=64,     # rnn hidden unit
+            hidden_size=32,     # rnn hidden unit
             num_layers=1,       # 有几层 RNN layers
             batch_first=True,   # input & output 会是以 batch size 为第一维度的特征集 e.g. (batch, time_step, input_size)
         )
-        self.hidden = nn.Linear(64, 32)
-        self.out = nn.Linear(32, 2)    # 输出层
+        self.hidden = nn.Linear(32, 16)
+        self.out = nn.Linear(16, 1)    # 输出层
+        self.out_cls = nn.Linear(16, 2)    # 输出层
 
     def forward(self, x):
+        c = torch.split(x, 1, dim = 0)
+        x_l = c[0]
+        x_r = c[1]
 
-        r_out_l, (h_n_l, h_c_l) = self.rnn(x_l, None)  
-        r_out_r, (h_n_r, h_c_r) = self.rnn(x_r, None)   
+        sim_rep = x_l-x_r
+        #sim_rep = torch.tensor(sim_rep, dtype=torch.float32)
+        out, (h_n, h_c) = self.rnn(sim_rep, None)
+        out = (out[:, -1, :])
+        out = self.hidden(out)
+        out = self.out(out)
+        return out
 
-        out_l = (r_out_l[:, -1, :])
-        out_r = (r_out_r[:, -1, :])
+    def forward_cls(self, x):
+        c = torch.split(x, 1, dim = 0)
+        x_l = c[0]
+        x_r = c[1]
 
-        dis = torch.sub(out_l, out_r)
-        sim_rep = dis.pow(2)
-        sim_rep = self.hidden(sim_rep)
-        out = self.out(sim_rep)
+        sim_rep = x_l-x_r
+        #sim_rep = torch.tensor(sim_rep, dtype=torch.float32)
+        out, (h_n, h_c) = self.rnn(sim_rep, None)
+        out = (out[:, -1, :])
+        out = self.hidden(out)
+        out = self.out_cls(out)
         return out
     @staticmethod
     def euclidean_distance(l, r):
@@ -97,12 +70,13 @@ class ERModel(nn.Module):
 
 
 class DMFormatDataset(data.Dataset):
-    def __init__(self, train_pt, embeding_source, embeding_style, schema):
+    def __init__(self, train_pt, eb_model, embeding_style, schema):
         self.data  = pd.read_csv(train_pt)
        # self.data = self.data.sample(frac=1).reset_index(drop=True)
         self.train_label = self.data['label']
-        self.label =  torch.tensor(np.array(self.data["label"].values))
-        self.eb_model = eb.FastTextEmbeding(source_pt=embeding_source)
+        self.label =  torch.tensor(np.array(self.data["label"].values), dtype=torch.long)
+        self.label = torch.reshape(self.label, (-1,1))
+        self.eb_model = eb_model
         self.schema = schema
         self.length = len(self.label)
         train_eb_ = []
@@ -123,7 +97,7 @@ class DMFormatDataset(data.Dataset):
             eb_ = np.concatenate((eb_l, eb_r), axis=0)
             train_eb_.append(eb_)
             #data_ = torch.tensor(data_)
-        self.train_eb = torch.tensor(train_eb_)
+        self.train_eb = torch.tensor(train_eb_, dtype=torch.float32)
 
     def __getitem__(self, index):
         data_ = self.train_eb[index]

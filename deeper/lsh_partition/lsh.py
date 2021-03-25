@@ -14,7 +14,7 @@ class LSH():
             self.num_bucket = 0  
             self.table = {}
 
-    def __init__(self, num_hash_func, num_hash_table, source_pt_l, source_pt_r, schema, embeding_model):
+    def __init__(self, num_hash_func, num_hash_table, data_l, data_r, schema, embeding_model):
         np.random.seed(1117311)
         self.schema = schema
         self.num_hash_func = num_hash_func
@@ -22,10 +22,9 @@ class LSH():
         #self.hash_table = [{} for _ in range(num_hash_table)]
         self.tables = [self.make_table() for _ in range(num_hash_table)]
 
-        self.source_pt_l = source_pt_l
-        self.source_pt_r = source_pt_r
-        self.data_l  = pd.read_csv(self.source_pt_l)
-        self.data_r  = pd.read_csv(self.source_pt_r)
+        self.data_l  = data_l
+        self.data_r  = data_r
+
         self.size_hash_table = 100
         self.hash_funcs = [[np.random.randint(-1,2,(self.size_hash_table, 4)) for _ in range(num_hash_func)] for _ in range (self.num_hash_table)]
         self.embeding_model = embeding_model
@@ -39,7 +38,7 @@ class LSH():
     def index(self):
         for index, row in self.data_l.iterrows():
             eb = []
-            for atom in schema:
+            for atom in self.schema:
                 eb.append(np.array(self.embeding_model.get_embeding(str(row[atom]))))
             eb = np.array(eb)
             self.tuples_eb[row['id']] = eb
@@ -60,7 +59,7 @@ class LSH():
                 table_id += 1
         for index, row in self.data_r.iterrows():
             eb = []
-            for atom in schema:
+            for atom in self.schema:
                 eb.append(np.array(self.embeding_model.get_embeding(str(row[atom]))))
             eb = np.array(eb)
             self.tuples_eb[row['id']] = eb
