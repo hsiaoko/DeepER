@@ -15,7 +15,7 @@ class LSH():
             self.table = {}
 
     def __init__(self, num_hash_func, num_hash_table, data_l, data_r, schema, embeding_model):
-        np.random.seed(1117311)
+        np.random.seed(1111131)
         self.schema = schema
         self.num_hash_func = num_hash_func
         self.num_hash_table = num_hash_table
@@ -29,7 +29,7 @@ class LSH():
         self.hash_funcs = [[np.random.randint(-1,2,(self.size_hash_table, 4)) for _ in range(num_hash_func)] for _ in range (self.num_hash_table)]
         self.embeding_model = embeding_model
         self.tuples_eb = {}
-
+        self.tau = 0.2
 
     def make_table(self):
         return self.HashTable()
@@ -40,22 +40,21 @@ class LSH():
             eb = []
             for atom in self.schema:
                 eb.append(np.array(self.embeding_model.get_embeding(str(row[atom]))))
+
             eb = np.array(eb)
-            self.tuples_eb[row['id']] = eb
-            
             table_id = 0
             for hash_fam in self.hash_funcs:
                 for h_ in hash_fam:
                     pos = np.dot(eb, h_)
                     pos = np.dot(pos, np.ones(4))
-                    pos[pos < 0.3] = 0 
-                    pos[pos >= 0.3] = 1 
+                    pos[pos < self.tau] = 0 
+                    pos[pos >= self.tau] = 1 
                     pos = int(reduce(lambda a,b: 2*a+b, pos))
                     table_ =  self.get_table(table_id)
-                    if pos in table_:
-                        table_[pos].append({row['id']: eb})
+                    if(pos in table_):
+                        table_[pos][row['id']] = eb
                     else:
-                        table_[pos] = [{row['id']: eb}]
+                        table_[pos] = {row['id']: eb}
                 table_id += 1
         for index, row in self.data_r.iterrows():
             eb = []
@@ -63,22 +62,21 @@ class LSH():
                 eb.append(np.array(self.embeding_model.get_embeding(str(row[atom]))))
             eb = np.array(eb)
             self.tuples_eb[row['id']] = eb
-            
             table_id = 0
             for hash_fam in self.hash_funcs:
                 for h_ in hash_fam:
                     pos = np.dot(eb, h_)
                     pos = np.dot(pos, np.ones(4))
-                    pos[pos < 0.3] = 0 
-                    pos[pos >= 0.3] = 1 
+                    pos[pos < self.tau] = 0 
+                    pos[pos >= self.tau] = 1 
                     pos = int(reduce(lambda a,b: 2*a+b, pos))
                     table_ =  self.get_table(table_id)
                     if pos in table_:
-                        table_[pos].append({row['id']: eb})
+                        table_[pos][row['id']] = eb
                     else:
-                        table_[pos] = [{row['id']: eb}]
+                        table_[pos] = {row['id']: eb}
                 table_id += 1
-
+        return 
     def show_hash_table(self):
         for table_id in range(self.num_hash_table):
             print("####### table: ", table_id, "#########")

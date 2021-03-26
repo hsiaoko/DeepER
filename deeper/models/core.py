@@ -37,19 +37,6 @@ class ERModel(nn.Module):
         out, (h_n, h_c) = self.rnn(sim_rep, None)
         out = (out[:, -1, :])
         out = self.hidden(out)
-        out = self.out(out)
-        return out
-
-    def forward_cls(self, x):
-        c = torch.split(x, 1, dim = 0)
-        x_l = c[0]
-        x_r = c[1]
-
-        sim_rep = x_l-x_r
-        #sim_rep = torch.tensor(sim_rep, dtype=torch.float32)
-        out, (h_n, h_c) = self.rnn(sim_rep, None)
-        out = (out[:, -1, :])
-        out = self.hidden(out)
         out = self.out_cls(out)
         return out
     @staticmethod
