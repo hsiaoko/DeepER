@@ -9,25 +9,30 @@ from models import core
 from lsh_partition import lsh
 from torch import nn
 import time
+from mpi4py import MPI
 
-class MatchingModel():
-    def __init__(self, embeding_style, embeding_src, schema, train_src=None, eval_src=None, prediction_src=None, args=None, model_pt=None, gt_src=None):
-        self.args = args
-        self.loss_reg = nn.SmoothL1Loss()
-        self.loss_cls = nn.CrossEntropyLoss() 
-        self.prediction_src = prediction_src
+comm = MPI.COMM_WORLD
+size = comm.Get_size()
+rank = comm.Get_rank()
+#from 
+
+class TrainModel():
+    def __init__(self, embeding_style, embeding_src, schema, train_src=None, eval_src=None, train_args=None, model_pt=None, gt_src=None):
+        assert model_pt != None and train_src != None and gt_src !=None and eval_src != None and train_args != None
         self.model_pt = model_pt
-        self.eb_model = embeding.FastTextEmbeding(source_pt=embeding_source)
+        self.eb_model = embeding.FastTextEmbeding(source_pt=embeding_src)
         self.schema = schema
+        self.args = train_args
+        self.model = core.ERModel()
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args['LR'])   # optimize all parameters
+        
         self.gt_src = gt_src
         self.gt = pd.read_csv(gt_src)
-        if(embeding_style=="fasttext-avg"):
-            self.model = core.ERModel()
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args['LR'])   # optimize all parameters
-            self.dm_data_set_train = core.DMFormatDataset(train_src, self.eb_model, 'avg', schema=schema)
-            self.dm_data_set_eval = core.DMFormatDataset(eval_src, self.eb_model, 'avg', schema=schema)
-            
-
+        self.loss_reg = nn.SmoothL1Loss()
+        self.loss_cls = nn.CrossEntropyLoss() 
+        self.dm_data_set_train = core.DMFormatDataset(train_src, self.eb_model, 'avg', schema=schema)
+        self.dm_data_set_eval = core.DMFormatDataset(eval_src, self.eb_model, 'avg', schema=schema)
+        self.eva_model = EvalModel(self.dm_data_set_eval, self.gt, self.model, self.eb_model)
     def run_train_reg(self):
         for epoch in range(self.args['EPOCH']):
             tp = 0
@@ -46,11 +51,12 @@ class MatchingModel():
                     self.optimizer.zero_grad()           # clear gradients for this training step
                     tp = 0
                     count = 0
-            self.run_eval(0.1)
+            #self.run_eval(0.1)
         sm = torch.jit.script(self.model)
         print("save: ", self.model_pt)
         sm.save(self.model_pt)
         return
+
 
     def run_train_cls(self):
         for epoch in range(self.args['EPOCH']):
@@ -68,35 +74,56 @@ class MatchingModel():
                     self.optimizer.zero_grad()           # clear gradients for this training step
                     tp = 0
                     count = 0
-            self.run_eval(eva_model='cls')
+            self.eva_model.run_eval(eva_model = 'cls')
         sm = torch.jit.script(self.model)
         print("save: ", self.model_pt)
         sm.save(self.model_pt)
         return
 
-    def run_eval(self, tau=None, eva_model='reg'):
+    
+
+class EvalModel():
+    def __init__(self, dm_data_set_eval=None, gt=None, model=None, eb_model=None):
+        #assert dm_data_set_eval != None and gt!=None, model!=None
+        #assert eb_model !=None and model != None and gt != None and dm_data_set_eval !=None
+        self.model = model
+        self.eb_model = eb_model
+        self.dm_data_set_eval = dm_data_set_eval
+        self.gt = gt
+    def run_eval(self, tau=None, eva_model='cls'):
         tp = 0 
         if eva_model=='reg':
-            for step, (x, y) in enumerate(self.dm_data_set_eval):
-                out = self.model.forward(x)
-                y = torch.reshprediction_l_src.numpy()
-                y = y.numpy()
-                dis_ = x-y
-                dis_ = np.reshape(dis_,-1)[0]
-                dis_ = abs(dis_)
-                if(dis_ < tau):
-                    tp += 1
-            print("prec: ", tp / self.dm_data_set_eval.length)
+            pass
         elif eva_model =='cls':
             for step, (x, y) in enumerate(self.dm_data_set_eval):
                 out = self.model.forward(x)
                 out = torch.max(out, 1)[1].data.numpy()
-                print(out)
                 if(out[0] == y[0]):
                     tp += 1
         print("prec: ", tp/self.dm_data_set_eval.length)
         return
+    def get_f1(self,result):
+        tp = 0
+        print(self.gt)
+        for row in result:
+            data_slice = self.gt.loc[self.gt['idDBLP'] == row[0]]
+            data_slice = data_slice.loc[data_slice['idACM'] == int(row[1])]
+            if(data_slice.empty):
+                continue
+            else:
+                tp+=1    
+        print(tp/len(self.gt))
+        return
 
+class PredictModel():
+    def __init__(self, embeding_style, embeding_src, schema, prediction_src=None, model_pt=None, gt_src=None):
+        assert model_pt != None
+        self.model_pt = model_pt
+        self.eb_model = embeding.FastTextEmbeding(source_pt=embeding_src)
+        self.schema = schema
+        self.prediction_src = prediction_src
+        self.model = torch.jit.load(self.model_pt)
+        self.eva_model = EvalModel()
     def run_test(self):
         model = torch.jit.load(self.model_pt)
         if(type(self.prediction_src == tuple)):
@@ -135,10 +162,9 @@ class MatchingModel():
                                 result.append([ key_l[2:], key_r[2:]])
 
         print(len(result))
-        self.get_f1(result)
+        self.eva_model.get_f1(result)
         return
     def run_test_full_data(self):
-        model = torch.jit.load(self.model_pt)
         if(type(self.prediction_src == tuple)):
             print(self.prediction_src)
             left_ = self.prediction_src[0]
@@ -160,13 +186,13 @@ class MatchingModel():
                 eb_r = np.reshape(eb_r, (-1,4,100))
                 eb_ = np.concatenate((eb_l, eb_r), axis=0)
                 eb_ = torch.tensor(eb_, dtype=torch.float32)
-                out = model(eb_)
+                out = self.model(eb_)
                 pred_y = torch.max(out, 1)[1].data.numpy()
                 print("FULL:","pred", pred_y, row_l["id"], row_r["id"], eb_)
         return
 
     def run_prediction(self, tuple_l, tuple_r,schema):
-        model = torch.jit.load(self.model_pt)
+        #self.model = torch.jit.load(self.model_pt)
         
         eb_l = []
         eb_r = []
@@ -183,7 +209,7 @@ class MatchingModel():
 
         eb_ = np.concatenate((eb_l, eb_r), axis=0)
         eb_ = torch.tensor(eb_, dtype=torch.float32)
-        out = model(eb_)
+        out = self.model(eb_)
 
         pred_y = torch.max(out, 1)[1].data.numpy()
         print("pred: ", pred_y[0])
@@ -192,63 +218,70 @@ class MatchingModel():
         else:
             return True
 
-    def get_f1(self,result):
-        tp = 0
-        self.gt  = pd.read_csv(self.gt_src)
-        print(self.gt)
-        for row in result:
-            data_slice = self.gt.loc[self.gt['idDBLP'] == row[0]]
-            data_slice = data_slice.loc[data_slice['idACM'] == int(row[1])]
-            if(data_slice.empty):
-                continue
-            else:
-                tp+=1
-        
-        print(tp/len(self.gt))
+class Runner():
+    def __init__(self, mode=None, src_args=None, train_args=None):
+        assert src_args != None 
+        if(mode == "TRAIN"):
+            assert train_args != None
+            self.model = TrainModel(
+                embeding_style = src_args['embeding_style'], 
+                embeding_src = src_args['embeding_src'],
+                schema = src_args['schema'],
+                train_src = src_args['train_src'],
+                eval_src = src_args['eval_src'], 
+                train_args = train_args,
+                model_pt = src_args['model_pt'],
+                gt_src = src_args['gt_src'])
 
-        return
+        elif(mode == 'PREDICT'):
+            self.model = PredictModel(
+                embeding_style = src_args['embeding_style'], 
+                embeding_src = src_args['embeding_src'],
+                schema = src_args['schema'],
+                prediction_src = src_args['prediction_src'],                    
+                model_pt = src_args['model_pt'],
+                gt_src = src_args['gt_src']
+            )
 
 
 if __name__ == '__main__':
-    schema = ['title', 'authors', 'venue', 'year']
-    embeding_source = '/home/LAB/zhuxk/project/REENet/models/embeding/dblp_acm.bin'
-    train_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv"
-    eval_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv"
-    model_pt = "/home/LAB/zhuxk/project/DeepER/models/DBLP_ACM_classification.py"
-    prediction_l_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP2.csv"
-    prediction_r_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/ACM.csv"
-    gt_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP-ACM_perfectMapping.csv"
-    args = {
-        "EPOCH":10,
-        "BATCH_SIZE":16,
-        "LR":0.0003
-    }
-    model = MatchingModel("fasttext-avg", 
-                        embeding_source, 
-                        schema, 
-                        train_src = train_src, 
-                        eval_src = eval_src, 
-                        args=args, 
-                        model_pt=model_pt, 
-                        prediction_src = (prediction_l_src, prediction_r_src),
-                        gt_src = gt_src
-                        )
-    time_start=time.time()
-    model.run_train_cls()
-    
+    #if rank == 0:
+        train_args = {
+            "EPOCH":15,
+            "BATCH_SIZE":16,
+            "LR":0.0003
+        }
+        prediction_l_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP2.csv"
+        prediction_r_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/ACM.csv"
+        src_args = {
+            "schema" : ['title', 'authors', 'venue', 'year'],
+            "embeding_src" : '/home/LAB/zhuxk/project/REENet/models/embeding/dblp_acm.bin',
+            "embeding_style" : 'fasttext',
+            "train_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
+            "eval_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
+            "model_pt" : "/home/LAB/zhuxk/project/DeepER/models/DBLP_ACM_classification.py",
+            "prediction_src" : (prediction_l_src, prediction_r_src),
+            "gt_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP-ACM_perfectMapping.csv"
+        }
+        #runner = Runner(src_args = src_args, train_args = train_args, mode="TRAIN")
+        runner = Runner(src_args = src_args, mode="PREDICT")
 
- #   data  = pd.read_csv(eval_src)
- #   tuple_l = data[['left_title','left_authors','left_venue', 'left_year']]
-#    tuple_r = data[['right_title','right_authors','right_venue', 'right_year']]
+        time_start=time.time()
+        #runner.model.run_train_cls()
+        runner.model.run_test()
 
-#    tuple_l = tuple_l.iloc[3100]
- #   tuple_r = tuple_r.iloc[3100]
-    #print("TTTT:", tuple_l, "||", tuple_r)
+    #   data  = pd.read_csv(eval_src)
+    #   tuple_l = data[['left_title','left_authors','left_venue', 'left_year']]
+    #      tuple_r = data[['right_title','right_authors','right_venue', 'right_year']]
 
-    #model.run_test_full_data()
-    #model.run_test()
+    #    tuple_l = tuple_l.iloc[3100]
+     #   tuple_r = tuple_r.iloc[3100]
+        #print("TTTT:", tuple_l, "||", tuple_r)
 
+        #model.run_test_full_data()
+        #model.run_test()
     #model.run_prediction(tuple_l, tuple_r, schema)
 
-    time_end=time.time()
-    print('time cost',time_end-time_start,'s')
+        time_end=time.time()
+        print('time cost',time_end-time_start,'s')
+    #else:

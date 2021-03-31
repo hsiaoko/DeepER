@@ -40,7 +40,6 @@ class LSH():
             eb = []
             for atom in self.schema:
                 eb.append(np.array(self.embeding_model.get_embeding(str(row[atom]))))
-
             eb = np.array(eb)
             table_id = 0
             for hash_fam in self.hash_funcs:
@@ -78,11 +77,16 @@ class LSH():
                 table_id += 1
         return 
     def show_hash_table(self):
+        print("*****************")
         for table_id in range(self.num_hash_table):
             print("####### table: ", table_id, "#########")
             table_ =  self.get_table(table_id)
             for bucket_id in table_:
                 print("bucket_id", bucket_id, " size: ", len(table_[bucket_id]))
+               # for key in table_[bucket_id]:
+               #     print(key)
+
+        print("*****************")
 
 
 if __name__ == '__main__':
