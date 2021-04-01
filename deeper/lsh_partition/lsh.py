@@ -75,7 +75,8 @@ class LSH():
                     else:
                         table_[pos] = {row['id']: eb}
                 table_id += 1
-        return 
+        return
+
     def show_hash_table(self):
         print("*****************")
         for table_id in range(self.num_hash_table):

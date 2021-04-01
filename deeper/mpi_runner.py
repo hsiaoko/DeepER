@@ -14,7 +14,6 @@ from mpi4py import MPI
 comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
-#from 
 
 class TrainModel():
     def __init__(self, embeding_style, embeding_src, schema, train_src=None, eval_src=None, train_args=None, model_pt=None, gt_src=None):
@@ -116,16 +115,23 @@ class EvalModel():
         return
 
 class PredictModel():
-    def __init__(self, embeding_style, embeding_src, schema, prediction_src=None, model_pt=None, gt_src=None):
-        assert model_pt != None
+    def __init__(self, embeding_style, embeding_src, schema, prediction_src=None, model_pt=None, gt_src=None, mpi_args = None, data=None, comm=None, size=None, rank=None):
+        assert model_pt != None and embeding_style != None and embeding_src != None and schema != None
         self.model_pt = model_pt
         self.eb_model = embeding.FastTextEmbeding(source_pt=embeding_src)
         self.schema = schema
         self.prediction_src = prediction_src
         self.model = torch.jit.load(self.model_pt)
         self.eva_model = EvalModel()
-    def run_test(self):
-        model = torch.jit.load(self.model_pt)
+        self.mpi_args = mpi_args
+        self.data = data
+        self.comm = comm
+        self.rank = rank
+        self.size = size
+        self.data_ = []
+        self.num_partitions = 0
+
+    def data_partition(self):
         if(type(self.prediction_src == tuple)):
             print(type(self.prediction_src))
             print(self.prediction_src)
@@ -136,7 +142,56 @@ class PredictModel():
         self.right_  = pd.read_csv(right_)
         lsh_ = lsh.LSH(num_hash_func=1, num_hash_table=1, data_l=self.left_, data_r=self.right_, schema=self.schema, embeding_model=self.eb_model)
         lsh_.index()
-        lsh_.show_hash_table()
+        #lsh_.show_hash_table()
+        result = []
+        if(self.mpi_args['role'] == 'master'):
+            print(self.mpi_args)
+            data_ = []
+            for table_id in range(lsh_.num_hash_table):
+                table_ =  lsh_.get_table(table_id)
+                for bucket_id in table_:
+                    data_.append(table_[bucket_id])
+        self.num_partitions = len(data_)
+        self.data_ = data_
+        return 
+        
+    def get_part(self, part_id):
+        return self.data_[part_id]
+
+    def run_mpi_test(self, data_):
+        print("run mpi_test: ", len(data_))
+        result = []
+        for key_l in data_:
+            eb_l = np.reshape(data_[key_l], (-1, 4, 100))
+            for key_r in data_:
+                if(key_l[0]== 'R' and key_r[0]== 'L'):
+                    continue
+                if (key_l[0] == key_r[0]):
+                    continue
+                else:
+                    eb_r = np.reshape(data_[key_r], (-1,4,100))
+                    eb_ = np.concatenate((eb_l, eb_r), axis=0)
+                    eb_ = torch.tensor(eb_, dtype=torch.float32)
+                    out = self.model(eb_)
+                    pred_y = torch.max(out, 1)[1].data.numpy()
+                    #print("TEST:", "pred", pred_y, key_l, key_r, eb_)
+                    if(pred_y == [0]):
+                        continue
+                    else:
+                        print("pred: ", pred_y[0], key_l[2:], key_r[2:])
+                        result.append([ key_l[2:], key_r[2:]])
+        return
+    def run_test(self):    
+        if(type(self.prediction_src == tuple)):
+            print(type(self.prediction_src))
+            print(self.prediction_src)
+            left_ = self.prediction_src[0]
+            right_ = self.prediction_src[1]
+
+        self.left_  = pd.read_csv(left_)
+        self.right_  = pd.read_csv(right_)
+        lsh_ = lsh.LSH(num_hash_func=1, num_hash_table=1, data_l=self.left_, data_r=self.right_, schema=self.schema, embeding_model=self.eb_model)
+        lsh_.index()
         result = []
         for table_id in range(lsh_.num_hash_table):
             table_ =  lsh_.get_table(table_id)
@@ -152,7 +207,7 @@ class PredictModel():
                             eb_r = np.reshape(table_[bucket_id][key_r], (-1,4,100))
                             eb_ = np.concatenate((eb_l, eb_r), axis=0)
                             eb_ = torch.tensor(eb_, dtype=torch.float32)
-                            out = model(eb_)
+                            out = self.model(eb_)
                             pred_y = torch.max(out, 1)[1].data.numpy()
                             #print("TEST:", "pred", pred_y, key_l, key_r, eb_)
                             if(pred_y == [0]):
@@ -164,7 +219,7 @@ class PredictModel():
         print(len(result))
         self.eva_model.get_f1(result)
         return
-    def run_test_full_data(self):
+    def run_test_without_blocking(self):
         if(type(self.prediction_src == tuple)):
             print(self.prediction_src)
             left_ = self.prediction_src[0]
@@ -188,7 +243,7 @@ class PredictModel():
                 eb_ = torch.tensor(eb_, dtype=torch.float32)
                 out = self.model(eb_)
                 pred_y = torch.max(out, 1)[1].data.numpy()
-                print("FULL:","pred", pred_y, row_l["id"], row_r["id"], eb_)
+                print("FULL:","pred", pred_y, row_l["id"], row_r["id"])
         return
 
     def run_prediction(self, tuple_l, tuple_r,schema):
@@ -218,9 +273,13 @@ class PredictModel():
         else:
             return True
 
+
 class Runner():
-    def __init__(self, mode=None, src_args=None, train_args=None):
+    def __init__(self, mode=None, src_args=None, train_args=None, mpi_args = None):
         assert src_args != None 
+        self.size = size
+        self.rank = rank        
+        self.mpi_args = mpi_args
         if(mode == "TRAIN"):
             assert train_args != None
             self.model = TrainModel(
@@ -234,54 +293,68 @@ class Runner():
                 gt_src = src_args['gt_src'])
 
         elif(mode == 'PREDICT'):
+            assert mpi_args != None 
             self.model = PredictModel(
                 embeding_style = src_args['embeding_style'], 
                 embeding_src = src_args['embeding_src'],
                 schema = src_args['schema'],
                 prediction_src = src_args['prediction_src'],                    
                 model_pt = src_args['model_pt'],
-                gt_src = src_args['gt_src']
+                gt_src = src_args['gt_src'],
+                mpi_args = self.mpi_args,
+                comm = self.mpi_args['comm'],
+                size = self.mpi_args['size'],
+                rank = self.mpi_args['rank']
             )
 
 
 if __name__ == '__main__':
-    #if rank == 0:
-        train_args = {
-            "EPOCH":15,
-            "BATCH_SIZE":16,
-            "LR":0.0003
-        }
-        prediction_l_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP2.csv"
-        prediction_r_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/ACM.csv"
-        src_args = {
-            "schema" : ['title', 'authors', 'venue', 'year'],
-            "embeding_src" : '/home/LAB/zhuxk/project/REENet/models/embeding/dblp_acm.bin',
-            "embeding_style" : 'fasttext',
-            "train_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
-            "eval_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
-            "model_pt" : "/home/LAB/zhuxk/project/DeepER/models/DBLP_ACM_classification.py",
-            "prediction_src" : (prediction_l_src, prediction_r_src),
-            "gt_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP-ACM_perfectMapping.csv"
-        }
+    train_args = {
+        "EPOCH":15,
+        "BATCH_SIZE":16,
+        "LR":0.0003
+    }
+
+    prediction_l_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP2.csv"
+    prediction_r_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/ACM.csv"
+
+    src_args = {
+        "schema" : ['title', 'authors', 'venue', 'year'],
+        "embeding_src" : '/home/LAB/zhuxk/project/REENet/models/embeding/dblp_acm.bin',
+        "embeding_style" : 'fasttext',
+        "train_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
+        "eval_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
+        "model_pt" : "/home/LAB/zhuxk/project/DeepER/models/DBLP_ACM_classification.py",
+        "prediction_src" : (prediction_l_src, prediction_r_src),
+        "gt_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP-ACM_perfectMapping.csv"
+    }
+
+    mpi_args = {
+        "role" : "master",
+        'num_workers' : 9,
+        'worker_id' : 0,
+        'comm' : comm,
+        'rank' : rank,
+        'size' : size
+    }
+    runner = Runner(src_args = src_args, mode="PREDICT", mpi_args = mpi_args)
+
+    if rank == 0:
+
         #runner = Runner(src_args = src_args, train_args = train_args, mode="TRAIN")
-        runner = Runner(src_args = src_args, mode="PREDICT")
-
         time_start=time.time()
-        #runner.model.run_train_cls()
-        runner.model.run_test()
+        runner.model.run_train_cls()
+        #runner.model.data_partition()
+        #for i in range(runner.model.num_partitions):
+        #    data_ = runner.model.get_part(i)
+        #    comm.send(data_, dest=i+1)
+        #runner.model.run_test_without_blocking()
 
-    #   data  = pd.read_csv(eval_src)
-    #   tuple_l = data[['left_title','left_authors','left_venue', 'left_year']]
-    #      tuple_r = data[['right_title','right_authors','right_venue', 'right_year']]
-
-    #    tuple_l = tuple_l.iloc[3100]
-     #   tuple_r = tuple_r.iloc[3100]
-        #print("TTTT:", tuple_l, "||", tuple_r)
-
-        #model.run_test_full_data()
-        #model.run_test()
-    #model.run_prediction(tuple_l, tuple_r, schema)
 
         time_end=time.time()
         print('time cost',time_end-time_start,'s')
-    #else:
+    else:
+        print("A")
+        #data_ = comm.recv()
+        #runner.model.run_mpi_test(data_)
+        #print("rank %d reveice : %s" % (rank, len(s)))
