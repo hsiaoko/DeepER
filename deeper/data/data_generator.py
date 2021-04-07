@@ -47,20 +47,30 @@ def train_data_generator():
     df.to_csv("/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/dblp_acm_attr_5_2.csv", index=0)
     return
 
-def ground_truth_generator(src_pth="/home/xiaoke/private/dataset/ER_Dataset/EC/TPACC/Test2005/csv/test_item_2005.csv"):
-
+def ground_truth_generator(src_pth="/home/xiaoke/private/dataset/ER_Dataset/EC/TPACC/Test2005/csv/test_result_2005.csv"):
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.max_rows', None)
     src_data = pd.read_csv(src_pth)
     max_no = 10439821
-    for i in range(1, max_no+1):
-        #r = r_data.loc[int(hash_val)]
+    df_gt = pd.DataFrame()
+    for i in range(8495000, max_no+1):
+        #r = r_data.oc[int(hash_val)]
         match = src_data.loc[src_data['no'] == i]
         if len(match) > 1:
-            print(match)
+            cart_df = match.merge(match,how='left',on='no')
+            for index, row in cart_df.iterrows():
+                if(row['test_id_x'] != row['test_id_y']):
+                    gt = {"idLeft": str(row['test_id_x']), "idRight" : str(row['test_id_y'])}
+                    df_gt = df_gt.append(gt, ignore_index=True)
+
+            #print(cart_df)
             break
         else:
             print(len(match), i)
 
+    print(df_gt)
+    df_gt.to_csv("/home/xiaoke/private/dataset/ER_Dataset/EC/TPACC/Test2005/csv/gt.csv", index=0)
 
-    print(src_data)
+    #print(src_data)
 if __name__ == '__main__':
     ground_truth_generator()
