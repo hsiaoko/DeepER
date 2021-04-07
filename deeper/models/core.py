@@ -14,7 +14,7 @@ import numpy as np
 
 
 class ERModel(nn.Module):
-    def __init__(self):
+    def __init__(self, num_attr):
         super(ERModel, self).__init__()
 
         self.rnn = nn.LSTM(     
@@ -26,19 +26,35 @@ class ERModel(nn.Module):
         self.hidden = nn.Linear(32, 16)
         self.out = nn.Linear(16, 1)    # 输出层
         self.out_cls = nn.Linear(16, 2)    # 输出层
-
+        self.num_attr = num_attr
     def forward(self, x):
         c = torch.split(x, 1, dim = 0)
-        x_l = c[0]
-        x_r = c[1]
-
+        (x_l, x_r) = torch.split(x, 1, dim=1)
+        x_l = x_l.reshape([-1, self.num_attr, 100])
+        x_r = x_r.reshape([-1, self.num_attr, 100])
         sim_rep = x_l-x_r
-        #sim_rep = torch.tensor(sim_rep, dtype=torch.float32)
         out, (h_n, h_c) = self.rnn(sim_rep, None)
         out = (out[:, -1, :])
         out = self.hidden(out)
         out = self.out_cls(out)
+
         return out
+    """
+
+    def forward_p(self, x):
+        c = torch.split(x, 1, dim = 0)
+        (x_l, x_r) = torch.split(x, 1, dim=0)
+        x_l = x_l.reshape([-1, 4, 100])
+        x_r = x_r.reshape([-1, 4, 100])
+        sim_rep = x_l-x_r
+        out, (h_n, h_c) = self.rnn(sim_rep, None)
+        out = (out[:, -1, :])
+        out = self.hidden(out)
+        out = self.out_cls(out)
+
+        return out
+
+    """
     @staticmethod
     def euclidean_distance(l, r):
         dis = torch.sub(l, r)
@@ -76,10 +92,10 @@ class DMFormatDataset(data.Dataset):
                 tuple_ = self.data.loc[index]
                 t_l = tuple_[attr_l]
                 t_r = tuple_[attr_r]
-                eb_l.append(self.eb_model.avg_embeding(str(t_l)))
-                eb_r.append(self.eb_model.avg_embeding(str(t_r)))
-            eb_l = np.reshape(eb_l, (-1, 4, 100))
-            eb_r = np.reshape(eb_r, (-1, 4, 100))
+                eb_l.append(self.eb_model.sum_embeding(str(t_l)))
+                eb_r.append(self.eb_model.sum_embeding(str(t_r)))
+            eb_l = np.reshape(eb_l, (-1, len(self.schema), 100))
+            eb_r = np.reshape(eb_r, (-1, len(self.schema), 100))
             label = self.label[index]
             eb_ = np.concatenate((eb_l, eb_r), axis=0)
             train_eb_.append(eb_)

@@ -10,10 +10,15 @@ from lsh_partition import lsh
 from torch import nn
 import time
 from mpi4py import MPI
+from torch.autograd import Variable
+
 
 comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
+
+
+
 
 class TrainModel():
     def __init__(self, embeding_style, embeding_src, schema, train_src=None, eval_src=None, train_args=None, model_pt=None, gt_src=None):
@@ -22,7 +27,9 @@ class TrainModel():
         self.eb_model = embeding.FastTextEmbeding(source_pt=embeding_src)
         self.schema = schema
         self.args = train_args
-        self.model = core.ERModel()
+        self.model = core.ERModel(len(schema))
+        #self.model = core.ERModelRNN()
+
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args['LR'])   # optimize all parameters
         
         self.gt_src = gt_src
@@ -31,7 +38,9 @@ class TrainModel():
         self.loss_cls = nn.CrossEntropyLoss() 
         self.dm_data_set_train = core.DMFormatDataset(train_src, self.eb_model, 'avg', schema=schema)
         self.dm_data_set_eval = core.DMFormatDataset(eval_src, self.eb_model, 'avg', schema=schema)
-        self.eva_model = EvalModel(self.dm_data_set_eval, self.gt, self.model, self.eb_model)
+        self.eva_model = EvalModel(self.dm_data_set_eval, self.gt, self.model, self.eb_model, schema=self.schema)
+    """
+
     def run_train_reg(self):
         for epoch in range(self.args['EPOCH']):
             tp = 0
@@ -55,18 +64,39 @@ class TrainModel():
         print("save: ", self.model_pt)
         sm.save(self.model_pt)
         return
-
+    """
 
     def run_train_cls(self):
+
+        train_loader = torch.utils.data.DataLoader(dataset=self.dm_data_set_train, batch_size=self.args['BATCH_SIZE'], shuffle=True)
         for epoch in range(self.args['EPOCH']):
-            tp = 0
-            count =0
             self.optimizer.zero_grad()
-            for step, (x, y) in enumerate(self.dm_data_set_train):
-                out = self.model.forward(x)
-                loss = self.loss_cls(out, y)
+            #for step, (x, y) in enumerate(self.dm_data_set_train):
+            for step, (x, y) in enumerate(train_loader):        # gives batch data
+                out_ = self.model.forward(x)
+                out = torch.max(out_, 1)[1].data
+                out = out.reshape((-1, 1))
+                ccc = out - y
+                tp = torch.tensor(np.array([0]), dtype=torch.float32,requires_grad = True)
+                p_ = torch.tensor(np.array([0]), dtype=torch.float32,requires_grad = True)
+                y = torch.tensor(y, dtype=torch.float32, requires_grad=True)
+
+                #for i in range(y.shape[0]):
+                #    tp = torch.add(tp, 1)
+                #    print(tp)
+                c = y[:] >= 1 
+                b = out[:]>=1
+                ss = torch.sum(c)
+                sss = torch.sum(c&b)
+                loss1 = torch.tensor(ss-sss, dtype=torch.float32,requires_grad = True)
+
+                out_ = torch.reshape(out_, (-1,2))
+                y = y.reshape((-1))
+                loss2 = self.loss_cls(out_, y.long())                    
+                loss = loss2
+
                 if step % self.args['BATCH_SIZE'] == 0:
-                    loss.backward()                 # backpropagation, compute gradients
+                    loss.backward()
                     self.optimizer.step()                # apply gradients
                 if step % 256 == 0:
                     print("Epoch: ", epoch, " - loss: ", loss)
@@ -82,21 +112,25 @@ class TrainModel():
     
 
 class EvalModel():
-    def __init__(self, dm_data_set_eval=None, gt=None, model=None, eb_model=None):
+    def __init__(self, dm_data_set_eval=None, gt=None, model=None, eb_model=None, schema=None):
         #assert dm_data_set_eval != None and gt!=None, model!=None
         #assert eb_model !=None and model != None and gt != None and dm_data_set_eval !=None
         self.model = model
         self.eb_model = eb_model
         self.dm_data_set_eval = dm_data_set_eval
         self.gt = gt
+        self.schema = schema
     def run_eval(self, tau=None, eva_model='cls'):
         tp = 0 
         if eva_model=='reg':
             pass
         elif eva_model =='cls':
             for step, (x, y) in enumerate(self.dm_data_set_eval):
+
+                x = np.reshape(x, (1,2,len(self.schema),100))
                 out = self.model.forward(x)
                 out = torch.max(out, 1)[1].data.numpy()
+                print(y[0], out[0])
                 if(out[0] == y[0]):
                     tp += 1
         print("prec: ", tp/self.dm_data_set_eval.length)
@@ -122,7 +156,8 @@ class PredictModel():
         self.schema = schema
         self.prediction_src = prediction_src
         self.model = torch.jit.load(self.model_pt)
-        self.eva_model = EvalModel()
+        self.gt = pd.read_csv(gt_src)
+        self.eva_model = EvalModel(gt=self.gt, schema=self.schema)
         self.mpi_args = mpi_args
         self.data = data
         self.comm = comm
@@ -162,19 +197,20 @@ class PredictModel():
         print("run mpi_test: ", len(data_))
         result = []
         for key_l in data_:
-            eb_l = np.reshape(data_[key_l], (-1, 4, 100))
+            eb_l = np.reshape(data_[key_l], (-1, len(self.schema), 100))
             for key_r in data_:
                 if(key_l[0]== 'R' and key_r[0]== 'L'):
                     continue
                 if (key_l[0] == key_r[0]):
                     continue
                 else:
-                    eb_r = np.reshape(data_[key_r], (-1,4,100))
+                    eb_r = np.reshape(data_[key_r], (-1,len(self.schema),100))
                     eb_ = np.concatenate((eb_l, eb_r), axis=0)
+                    eb_ = np.reshape(eb_, (1,2,len(self.schema),100))
                     eb_ = torch.tensor(eb_, dtype=torch.float32)
                     out = self.model(eb_)
                     pred_y = torch.max(out, 1)[1].data.numpy()
-                    #print("TEST:", "pred", pred_y, key_l, key_r, eb_)
+                    #print("TEST:", "pred", pred_y, key_l, key_r)
                     if(pred_y == [0]):
                         continue
                     else:
@@ -197,15 +233,16 @@ class PredictModel():
             table_ =  lsh_.get_table(table_id)
             for bucket_id in table_:
                 for key_l in table_[bucket_id]:
-                    eb_l = np.reshape(table_[bucket_id][key_l], (-1, 4, 100))
+                    eb_l = np.reshape(table_[bucket_id][key_l], (-1, len(self.schema), 100))
                     for key_r in table_[bucket_id]:
                         if(key_l[0]== 'R' and key_r[0]== 'L'):
                             continue
                         if (key_l[0] == key_r[0]):
                             continue
                         else:
-                            eb_r = np.reshape(table_[bucket_id][key_r], (-1,4,100))
+                            eb_r = np.reshape(table_[bucket_id][key_r], (-1,len(self.schema),100))
                             eb_ = np.concatenate((eb_l, eb_r), axis=0)
+                            eb_ = np.reshape(eb_, (1,2,len(self.schema),100))
                             eb_ = torch.tensor(eb_, dtype=torch.float32)
                             out = self.model(eb_)
                             pred_y = torch.max(out, 1)[1].data.numpy()
@@ -237,9 +274,10 @@ class PredictModel():
                     t_r = row_r[attr]
                     eb_l.append(self.eb_model.avg_embeding(str(t_l)))
                     eb_r.append(self.eb_model.avg_embeding(str(t_r)))
-                eb_l = np.reshape(eb_l, (-1,4,100))
-                eb_r = np.reshape(eb_r, (-1,4,100))
+                eb_l = np.reshape(eb_l, (-1,len(self.schema),100))
+                eb_r = np.reshape(eb_r, (-1,len(self.schema),100))
                 eb_ = np.concatenate((eb_l, eb_r), axis=0)
+                eb_ = np.reshape(eb_, (1,2,len(self.schema),100))
                 eb_ = torch.tensor(eb_, dtype=torch.float32)
                 out = self.model(eb_)
                 pred_y = torch.max(out, 1)[1].data.numpy()
@@ -259,8 +297,8 @@ class PredictModel():
             eb_l.append(self.eb_model.avg_embeding(str(t_l)))
             eb_r.append(self.eb_model.avg_embeding(str(t_r)))
 
-        eb_l = np.reshape(eb_l, (-1, 4, 100))
-        eb_r = np.reshape(eb_r, (-1, 4, 100))
+        eb_l = np.reshape(eb_l, (-1, len(schema), 100))
+        eb_r = np.reshape(eb_r, (-1, len(schema), 100))
 
         eb_ = np.concatenate((eb_l, eb_r), axis=0)
         eb_ = torch.tensor(eb_, dtype=torch.float32)
@@ -310,20 +348,20 @@ class Runner():
 
 if __name__ == '__main__':
     train_args = {
-        "EPOCH":15,
-        "BATCH_SIZE":16,
-        "LR":0.0003
+        "EPOCH":30,
+        "BATCH_SIZE":64,
+        "LR":0.001
     }
 
     prediction_l_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP2.csv"
     prediction_r_src = "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/ACM.csv"
 
     src_args = {
-        "schema" : ['title', 'authors', 'venue', 'year'],
+        "schema" : ['title','authors','venue','year'],
         "embeding_src" : '/home/LAB/zhuxk/project/REENet/models/embeding/dblp_acm.bin',
         "embeding_style" : 'fasttext',
-        "train_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
-        "eval_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/train_balance.csv",
+        "train_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/dblp_acm_attr_5_1.csv",
+        "eval_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/dblp_acm_attr_10_1.csv",
         "model_pt" : "/home/LAB/zhuxk/project/DeepER/models/DBLP_ACM_classification.py",
         "prediction_src" : (prediction_l_src, prediction_r_src),
         "gt_src" : "/home/LAB/zhuxk/project/data/ER-dataset-benchmark/ER/DBLP-ACM/DBLP-ACM_perfectMapping.csv"
@@ -337,24 +375,28 @@ if __name__ == '__main__':
         'rank' : rank,
         'size' : size
     }
-    runner = Runner(src_args = src_args, mode="PREDICT", mpi_args = mpi_args)
+    runner = Runner(src_args = src_args, train_args = train_args, mode="TRAIN")
+    
+    #runner = Runner(src_args = src_args, mode="PREDICT", mpi_args = mpi_args)
+
+    time_start=time.time()
 
     if rank == 0:
 
-        #runner = Runner(src_args = src_args, train_args = train_args, mode="TRAIN")
-        time_start=time.time()
         runner.model.run_train_cls()
-        #runner.model.data_partition()
-        #for i in range(runner.model.num_partitions):
-        #    data_ = runner.model.get_part(i)
-        #    comm.send(data_, dest=i+1)
+       # runner.model.data_partition()
+       # for i in range(runner.model.num_partitions):
+       #     data_ = runner.model.get_part(i)
+       #     comm.send(data_, dest=i+1)
         #runner.model.run_test_without_blocking()
+        #runner.model.run_test()
 
 
-        time_end=time.time()
-        print('time cost',time_end-time_start,'s')
+
     else:
         print("A")
         #data_ = comm.recv()
         #runner.model.run_mpi_test(data_)
         #print("rank %d reveice : %s" % (rank, len(s)))
+    time_end=time.time()
+    print('time cost',time_end-time_start,'s')

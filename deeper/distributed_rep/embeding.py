@@ -105,8 +105,8 @@ class FastTextEmbeding(EmbedingModel):
         return np.array(avg_vec)
 
     def sum_embeding(self, seq_words):
-        vec_seq = self.avg_embeding(seq_words)
-        vec_seq = np.array(vec_seq)
+        vec_seq = self.seq_embeding(seq_words)
+        vec_seq = np.array(vec_seq)        
         len_ = len(vec_seq)
         sum_vec = np.zeros(np.shape(vec_seq)[1])
         for vec_ in vec_seq:
